@@ -65,6 +65,8 @@ Dokumen ini disusun sebagai panduan serah-terima (_handover document_) resmi unt
   - _Bug 1_: Mode Pure MD teks memanjang ke kanan $\rightarrow$ Diperbaiki dengan `EditorView.lineWrapping`.
   - _Bug 2_: File hilang saat di-refresh $\rightarrow$ Dihapus semua mock localStorage, diganti dengan File System Access API & Tauri fs plugin.
   - _Bug 3_: Kursor WYSIWYG loncat ke baris paling bawah saat ketik/hapus 1 huruf $\rightarrow$ Diperbaiki dengan guard `isSelfUpdating`, `untrack` Svelte 5, dan fungsi `markdownToHtml` sinkron di `WysiwygEditor.svelte`.
+  - _Bug 4_: Error missing `icons/icon.ico` saat kompilasi Windows resource `tauri-build` $\rightarrow$ Di-generate seluruh icon bundle resmi (`icon.ico`, `icon.icns`, PNGs) dari `app-icon.svg` via `npx tauri icon`.
+  - _Build Windows Native_: Berhasil dikompilasi ke executable biner Windows native (`src-tauri/target/debug/knowledge.exe`).
 
 ### ✅ FASE 2: PKM / Wikilinks, Backlinks & Indexer (SELESAI 100%)
 

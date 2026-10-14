@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#222226" />
+      <stop offset="100%" stop-color="#121215" />
+    </linearGradient>
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#000000" flood-opacity="0.5" />
+    </filter>
+  </defs>
+
+  <!-- Base Rounded Container (Zed Style) -->
+  <rect x="24" y="24" width="464" height="464" rx="104" fill="url(#bg)" stroke="#27272a" stroke-width="4" filter="url(#shadow)" />
+
+  <!-- Inner subtle border -->
+  <rect x="32" y="32" width="448" height="448" rx="96" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-opacity="0.08" />
+
+  <!-- Knowledge 'K' Monogram / Book Symbol -->
+  <g transform="translate(136, 128)">
+    <!-- Vertical Spine -->
+    <rect x="20" y="20" width="36" height="216" rx="12" fill="url(#cyanGrad)" />
+
+    <!-- Upper Arm -->
+    <path d="M 68 128 L 176 36 C 182 30, 194 30, 202 38 C 210 46, 210 58, 202 66 L 108 148 Z" fill="#38bdf8" />
+
+    <!-- Lower Arm -->
+    <path d="M 88 120 L 198 220 C 206 228, 206 240, 198 248 C 190 256, 178 256, 170 248 L 68 152 Z" fill="#0284c7" />
+
+    <!-- Center Accent Dot -->
+    <circle cx="82" cy="136" r="10" fill="#f8fafc" />
+  </g>
+</svg>
