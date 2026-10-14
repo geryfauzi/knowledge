@@ -4,21 +4,48 @@
   import { indexerService, type BacklinkItem } from '../services/indexer';
   import Button from './ui/button/Button.svelte';
 
+  interface HeadingItem {
+    level: number;
+    text: string;
+    line: number;
+  }
+
   interface Props {
     currentPath: string;
     currentName: string;
+    currentContent?: string;
     onOpenFile: (path: string) => void;
+    onScrollToHeading?: (headingText: string, line?: number, index?: number) => void;
   }
 
   let {
     currentPath,
     currentName,
-    onOpenFile
+    currentContent = '',
+    onOpenFile,
+    onScrollToHeading
   }: Props = $props();
 
   let activeTab = $state<'backlinks' | 'tags' | 'outline'>('backlinks');
   let backlinks = $state<BacklinkItem[]>([]);
   let allTags = $state<{ tag: string; count: number; files: string[] }[]>([]);
+
+  let headings = $derived.by(() => {
+    if (!currentContent) return [];
+    const lines = currentContent.split('\n');
+    const result: HeadingItem[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const match = lines[i].match(/^(#{1,6})\s+(.+)$/);
+      if (match) {
+        result.push({
+          level: match[1].length,
+          text: match[2].trim(),
+          line: i + 1
+        });
+      }
+    }
+    return result;
+  });
 
   async function loadMetadata() {
     if (!currentPath) {
@@ -45,20 +72,29 @@
   <div class="h-9 border-b border-zed-border/70 flex items-center justify-around px-2 text-zed-text-muted">
     <button
       onclick={() => (activeTab = 'backlinks')}
-      class="flex items-center space-x-1.5 py-1 px-2 rounded transition-colors {activeTab === 'backlinks' ? 'text-zed-accent font-medium bg-zinc-800/60' : 'text-zinc-400 hover:text-zinc-200'}"
+      class="flex items-center space-x-1 py-1 px-1.5 rounded transition-colors {activeTab === 'backlinks' ? 'text-zed-accent font-medium bg-zinc-800/60' : 'text-zinc-400 hover:text-zinc-200'}"
       title="Backlinks (Linked Mentions)"
     >
-      <Link2 size={13} />
-      <span class="text-[11px]">Backlinks ({backlinks.length})</span>
+      <Link2 size={12} />
+      <span class="text-[10.5px]">Links ({backlinks.length})</span>
     </button>
 
     <button
       onclick={() => (activeTab = 'tags')}
-      class="flex items-center space-x-1.5 py-1 px-2 rounded transition-colors {activeTab === 'tags' ? 'text-zed-accent font-medium bg-zinc-800/60' : 'text-zinc-400 hover:text-zinc-200'}"
+      class="flex items-center space-x-1 py-1 px-1.5 rounded transition-colors {activeTab === 'tags' ? 'text-zed-accent font-medium bg-zinc-800/60' : 'text-zinc-400 hover:text-zinc-200'}"
       title="Tags Index"
     >
-      <Hash size={13} />
-      <span class="text-[11px]">Tags</span>
+      <Hash size={12} />
+      <span class="text-[10.5px]">Tags ({allTags.length})</span>
+    </button>
+
+    <button
+      onclick={() => (activeTab = 'outline')}
+      class="flex items-center space-x-1 py-1 px-1.5 rounded transition-colors {activeTab === 'outline' ? 'text-zed-accent font-medium bg-zinc-800/60' : 'text-zinc-400 hover:text-zinc-200'}"
+      title="Document Outline"
+    >
+      <ListTree size={12} />
+      <span class="text-[10.5px]">Outline ({headings.length})</span>
     </button>
   </div>
 
@@ -118,6 +154,33 @@
                 <span>#{tagItem.tag}</span>
                 <span class="text-zinc-500 text-[9.5px]">({tagItem.count})</span>
               </span>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {:else if activeTab === 'outline'}
+      <div>
+        <div class="text-[10px] uppercase tracking-wider font-semibold text-zinc-500 mb-2">
+          Document Outline
+        </div>
+
+        {#if headings.length === 0}
+          <div class="p-3 rounded bg-zinc-900/40 border border-zinc-800/60 text-center text-zinc-500 text-[11px] italic">
+            No headings found in this note. Use # Heading to create structure.
+          </div>
+        {:else}
+          <div class="space-y-1">
+            {#each headings as h, index}
+              <button
+                type="button"
+                onclick={() => onScrollToHeading?.(h.text, h.line, index)}
+                class="w-full text-left py-1.5 px-2 rounded hover:bg-zinc-800/80 active:bg-zinc-700/80 text-zinc-300 hover:text-white transition-all truncate block text-[11px] font-mono cursor-pointer border border-transparent hover:border-zinc-700/60"
+                style="padding-left: {(h.level - 1) * 12 + 8}px"
+                title="Line {h.line}: H{h.level} - Click to jump and focus"
+              >
+                <span class="text-zed-accent/80 font-semibold text-[10px] mr-1.5 inline-block">H{h.level}</span>
+                <span>{h.text}</span>
+              </button>
             {/each}
           </div>
         {/if}

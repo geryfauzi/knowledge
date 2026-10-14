@@ -13,9 +13,28 @@ export interface BacklinkItem {
   context: string;
 }
 
+export interface GraphNode {
+  id: string;
+  name: string;
+  path: string;
+  connections: number;
+}
+
+export interface GraphLink {
+  source: string;
+  target: string;
+}
+
+export interface GraphData {
+  nodes: GraphNode[];
+  links: GraphLink[];
+}
+
 class IndexerService {
   // Map: Target Note Name (lowercase) -> Set of source file paths that link to it
   private backlinks: Map<string, Set<string>> = new Map();
+  // Map: Source file path -> Set of target note names (lowercase)
+  private forwardLinks: Map<string, Set<string>> = new Map();
   // Map: Tag Name (e.g. "project") -> Set of file paths containing it
   private tagIndex: Map<string, Set<string>> = new Map();
   // List of all known markdown note titles for autocomplete
@@ -26,6 +45,7 @@ class IndexerService {
    */
   async reindexVault(): Promise<void> {
     this.backlinks.clear();
+    this.forwardLinks.clear();
     this.tagIndex.clear();
     this.noteTitles = [];
 
@@ -55,8 +75,12 @@ class IndexerService {
     const wikilinkRegex = /\[\[([^\]|#]+)(?:[#|][^\]]+)?\]\]/g;
     let match: RegExpExecArray | null;
 
+    this.forwardLinks.set(filePath, new Set());
+
     while ((match = wikilinkRegex.exec(content)) !== null) {
       const targetTitle = match[1].trim().toLowerCase();
+      this.forwardLinks.get(filePath)!.add(targetTitle);
+
       if (!this.backlinks.has(targetTitle)) {
         this.backlinks.set(targetTitle, new Set());
       }
@@ -164,6 +188,44 @@ class IndexerService {
 
     await searchRecursive(files);
     return results;
+  }
+
+  /**
+   * Generates graph nodes and edges for 2D Graph View
+   */
+  getGraphData(): GraphData {
+    const titleToPath = new Map<string, string>();
+    for (const item of this.noteTitles) {
+      titleToPath.set(item.title.toLowerCase(), item.path);
+    }
+
+    const connectionCounts = new Map<string, number>();
+    const linkSet = new Set<string>();
+    const links: GraphLink[] = [];
+
+    for (const [sourcePath, targets] of this.forwardLinks.entries()) {
+      for (const targetTitle of targets) {
+        const targetPath = titleToPath.get(targetTitle.toLowerCase());
+        if (targetPath && targetPath !== sourcePath) {
+          const key = sourcePath < targetPath ? `${sourcePath}<->${targetPath}` : `${targetPath}<->${sourcePath}`;
+          if (!linkSet.has(key)) {
+            linkSet.add(key);
+            links.push({ source: sourcePath, target: targetPath });
+            connectionCounts.set(sourcePath, (connectionCounts.get(sourcePath) || 0) + 1);
+            connectionCounts.set(targetPath, (connectionCounts.get(targetPath) || 0) + 1);
+          }
+        }
+      }
+    }
+
+    const nodes: GraphNode[] = this.noteTitles.map(item => ({
+      id: item.path,
+      name: item.title,
+      path: item.path,
+      connections: connectionCounts.get(item.path) || 0
+    }));
+
+    return { nodes, links };
   }
 }
 

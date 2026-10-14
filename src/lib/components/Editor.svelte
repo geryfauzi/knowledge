@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { untrack } from 'svelte';
   import EditorToolbar from './editor/EditorToolbar.svelte';
   import WysiwygEditor from './editor/WysiwygEditor.svelte';
   import MarkdownEditor from './editor/MarkdownEditor.svelte';
@@ -10,7 +10,7 @@
     content: string;
     path: string;
     isDirty?: boolean;
-    onChange: (newMarkdown: string) => void;
+    onChange: (filePath: string, newMarkdown: string) => void;
     onSave: () => void;
     onStatsChange: (stats: EditorStats) => void;
   }
@@ -25,12 +25,11 @@
   }: Props = $props();
 
   let mode = $state<'wysiwyg' | 'markdown'>('wysiwyg');
-  let htmlContent = $state('');
+  let htmlContent = $state(untrack(() => markdownToHtml(content)));
   let activeStates = $state<Record<string, boolean>>({});
 
   let wysiwygRef = $state<any>(null);
   let markdownRef = $state<any>(null);
-  let currentLoadedPath = $state('');
 
   function syncMarkdownToHtml(md: string) {
     htmlContent = markdownToHtml(md);
@@ -40,7 +39,6 @@
     if (newMode === mode) return;
 
     if (newMode === 'wysiwyg') {
-      // Switching from Pure MD to WYSIWYG: Parse MD to HTML
       syncMarkdownToHtml(content);
     }
     mode = newMode;
@@ -49,11 +47,11 @@
   function handleWysiwygChange(newHtml: string) {
     htmlContent = newHtml;
     const newMarkdown = htmlToMarkdown(newHtml);
-    onChange(newMarkdown);
+    onChange(path, newMarkdown);
   }
 
   function handleMarkdownChange(newMd: string) {
-    onChange(newMd);
+    onChange(path, newMd);
   }
 
   function handleToolbarAction(action: string, param?: any) {
@@ -69,18 +67,13 @@
     }
   }
 
-  $effect(() => {
-    if (path !== currentLoadedPath) {
-      currentLoadedPath = path;
-      const md = untrack(() => content);
-      syncMarkdownToHtml(md);
+  export function scrollToHeading(headingText: string, line?: number, index?: number) {
+    if (mode === 'wysiwyg' && wysiwygRef) {
+      wysiwygRef.scrollToHeading(headingText, index);
+    } else if (mode === 'markdown' && markdownRef) {
+      markdownRef.scrollToHeading(headingText, line);
     }
-  });
-
-  onMount(() => {
-    currentLoadedPath = path;
-    syncMarkdownToHtml(content);
-  });
+  }
 </script>
 
 <div class="h-full w-full flex flex-col bg-zed-bg-base overflow-hidden">

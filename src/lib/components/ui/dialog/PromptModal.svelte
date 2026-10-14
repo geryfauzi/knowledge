@@ -12,7 +12,9 @@
     confirmText?: string;
     cancelText?: string;
     isAlertOnly?: boolean;
+    danger?: boolean;
     onConfirm: (val: string) => void;
+    onCancel?: () => void;
     onClose: () => void;
   }
 
@@ -25,7 +27,9 @@
     confirmText = 'Confirm',
     cancelText = 'Cancel',
     isAlertOnly = false,
+    danger = false,
     onConfirm,
+    onCancel,
     onClose
   }: Props = $props();
 
@@ -39,6 +43,13 @@
 
   function handleSubmit() {
     onConfirm(inputValue);
+    onClose();
+  }
+
+  function handleCancel() {
+    if (onCancel) {
+      onCancel();
+    }
     onClose();
   }
 
@@ -70,7 +81,7 @@
 
   {#snippet footer()}
     {#if cancelText}
-      <Button variant="ghost" size="sm" onclick={onClose}>
+      <Button variant="ghost" size="sm" onclick={handleCancel}>
         {cancelText}
       </Button>
     {/if}
@@ -78,7 +89,7 @@
       variant="default"
       size="sm"
       onclick={handleSubmit}
-      class="bg-zed-accent text-zinc-950 font-semibold hover:bg-zed-accent-hover"
+      class={danger ? 'bg-red-600 text-white font-semibold hover:bg-red-700' : 'bg-zed-accent text-zinc-950 font-semibold hover:bg-zed-accent-hover'}
     >
       {confirmText}
     </Button>

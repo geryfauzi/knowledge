@@ -112,6 +112,33 @@
     }
   }
 
+  export function scrollToHeading(headingText: string, lineIndex?: number) {
+    if (!view) return;
+    const doc = view.state.doc;
+    let targetPos = -1;
+
+    if (lineIndex !== undefined && lineIndex > 0 && lineIndex <= doc.lines) {
+      targetPos = doc.line(lineIndex).from;
+    } else {
+      const cleanTarget = headingText.trim().toLowerCase();
+      for (let i = 1; i <= doc.lines; i++) {
+        const line = doc.line(i);
+        if (line.text.toLowerCase().includes(cleanTarget)) {
+          targetPos = line.from;
+          break;
+        }
+      }
+    }
+
+    if (targetPos >= 0) {
+      view.dispatch({
+        selection: { anchor: targetPos },
+        effects: EditorView.scrollIntoView(targetPos, { y: 'start', yMargin: 24 })
+      });
+      view.focus();
+    }
+  }
+
   function calculateStats(state: EditorState) {
     const doc = state.doc;
     const text = doc.toString();

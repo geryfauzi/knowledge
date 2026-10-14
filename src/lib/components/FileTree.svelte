@@ -7,10 +7,14 @@
     Folder,
     FolderOpen,
     Plus,
-    FolderPlus
+    FolderPlus,
+    Trash2,
+    Copy
   } from 'lucide-svelte';
   import Button from './ui/button/Button.svelte';
   import Input from './ui/input/Input.svelte';
+  import { copyToClipboard, getRelativePath } from '../utils';
+  import { vaultService } from '../services/vault';
 
   interface Props {
     files: FileNode[];
@@ -18,6 +22,8 @@
     onSelectFile: (file: FileNode) => void;
     onCreateFile: (name: string, parentPath?: string) => void;
     onCreateFolder: (name: string, parentPath?: string) => void;
+    onDeleteNode?: (node: FileNode) => void;
+    onNotify?: (msg: string) => void;
   }
 
   let {
@@ -25,7 +31,9 @@
     activePath,
     onSelectFile,
     onCreateFile,
-    onCreateFolder
+    onCreateFolder,
+    onDeleteNode,
+    onNotify
   }: Props = $props();
 
   let expandedFolders = $state<Record<string, boolean>>({
@@ -35,6 +43,40 @@
   let isCreating = $state<'file' | 'folder' | null>(null);
   let newItemName = $state('');
   let targetParentPath = $state('');
+  let contextMenu = $state<{
+    x: number;
+    y: number;
+    node: FileNode;
+  } | null>(null);
+
+  function handleContextMenu(e: MouseEvent, node: FileNode) {
+    e.preventDefault();
+    e.stopPropagation();
+    const menuWidth = 160;
+    const menuHeight = node.isDirectory ? 180 : 150;
+    const x = Math.min(e.clientX, window.innerWidth - menuWidth - 8);
+    const y = Math.min(e.clientY, window.innerHeight - menuHeight - 8);
+    contextMenu = { x, y, node };
+  }
+
+  function closeContextMenu() {
+    contextMenu = null;
+  }
+
+  async function handleCopyPath(path: string) {
+    const success = await copyToClipboard(path);
+    if (success) {
+      onNotify?.(`Copied path: ${path}`);
+    }
+  }
+
+  async function handleCopyRelativePath(path: string) {
+    const rel = getRelativePath(path, vaultService.vaultPath);
+    const success = await copyToClipboard(rel);
+    if (success) {
+      onNotify?.(`Copied relative path: ${rel}`);
+    }
+  }
 
   function toggleFolder(path: string, e: MouseEvent) {
     e.stopPropagation();
@@ -124,7 +166,11 @@
             role="button"
             tabindex="0"
             onclick={(e) => toggleFolder(node.path, e)}
-            onkeydown={(e) => e.key === 'Enter' && toggleFolder(node.path, e as any)}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') toggleFolder(node.path, e as any);
+              if (e.key === 'Delete') onDeleteNode?.(node);
+            }}
+            oncontextmenu={(e) => handleContextMenu(e, node)}
             class="flex items-center justify-between px-2 py-1 rounded cursor-pointer hover:bg-zed-bg-hover text-zinc-400 hover:text-zinc-200 group transition-colors"
             style="padding-left: {level * 12 + 8}px;"
           >
@@ -140,13 +186,27 @@
             </div>
 
             <!-- Folder hover quick actions -->
-            <div class="opacity-0 group-hover:opacity-100 flex items-center space-x-0.5 text-zinc-500">
+            <div class="opacity-0 group-hover:opacity-100 flex items-center space-x-0.5 text-zinc-500 shrink-0">
               <button
                 onclick={(e) => { e.stopPropagation(); startCreate('file', node.path); }}
-                class="hover:text-zinc-200 p-0.5"
+                class="hover:text-zinc-200 p-0.5 rounded transition-colors"
                 title="New file in this folder"
               >
                 <Plus size={11} />
+              </button>
+              <button
+                onclick={(e) => { e.stopPropagation(); startCreate('folder', node.path); }}
+                class="hover:text-zinc-200 p-0.5 rounded transition-colors"
+                title="New folder in this folder"
+              >
+                <FolderPlus size={11} />
+              </button>
+              <button
+                onclick={(e) => { e.stopPropagation(); onDeleteNode?.(node); }}
+                class="hover:text-red-400 p-0.5 rounded transition-colors"
+                title="Delete folder"
+              >
+                <Trash2 size={11} />
               </button>
             </div>
           </div>
@@ -181,14 +241,34 @@
           {/if}
         </div>
       {:else}
-        <button
+        <div
+          role="button"
+          tabindex="0"
           onclick={() => onSelectFile(node)}
-          class="w-full text-left flex items-center space-x-1.5 px-2 py-1 rounded cursor-pointer transition-colors {activePath === node.path ? 'bg-zed-bg-active text-zed-text-primary font-medium' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zed-bg-hover'}"
+          onkeydown={(e) => {
+            if (e.key === 'Enter') onSelectFile(node);
+            if (e.key === 'Delete') onDeleteNode?.(node);
+          }}
+          oncontextmenu={(e) => handleContextMenu(e, node)}
+          class="w-full text-left flex items-center justify-between px-2 py-1 rounded cursor-pointer transition-colors group {activePath === node.path ? 'bg-zed-bg-active text-zed-text-primary font-medium' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zed-bg-hover'}"
           style="padding-left: {level * 12 + 20}px;"
         >
-          <FileText size={12} class={activePath === node.path ? 'text-zed-accent' : 'text-zinc-500'} />
-          <span class="truncate text-[11.5px]">{node.name}</span>
-        </button>
+          <div class="flex items-center space-x-1.5 truncate">
+            <FileText size={12} class={activePath === node.path ? 'text-zed-accent' : 'text-zinc-500'} />
+            <span class="truncate text-[11.5px]">{node.name}</span>
+          </div>
+
+          <!-- File hover quick actions -->
+          <div class="opacity-0 group-hover:opacity-100 flex items-center space-x-0.5 text-zinc-500 shrink-0">
+            <button
+              onclick={(e) => { e.stopPropagation(); onDeleteNode?.(node); }}
+              class="hover:text-red-400 p-0.5 rounded transition-colors"
+              title="Delete note"
+            >
+              <Trash2 size={11} />
+            </button>
+          </div>
+        </div>
       {/if}
     {/snippet}
 
@@ -196,4 +276,90 @@
       {@render renderNode(rootNode, 0)}
     {/each}
   </div>
+
+  <!-- Context Menu (Right Click) -->
+  {#if contextMenu}
+    <div
+      class="fixed inset-0 z-50 bg-transparent"
+      role="presentation"
+      onclick={closeContextMenu}
+      oncontextmenu={(e) => { e.preventDefault(); closeContextMenu(); }}
+    ></div>
+
+    <div
+      class="fixed z-50 min-w-[160px] bg-zinc-900 border border-zinc-700/80 rounded-md shadow-xl py-1 text-xs text-zinc-300 font-sans"
+      style="top: {contextMenu.y}px; left: {contextMenu.x}px;"
+    >
+      {#if contextMenu.node.isDirectory}
+        <button
+          onclick={() => { const p = contextMenu!.node.path; closeContextMenu(); startCreate('file', p); }}
+          class="w-full px-2.5 py-1.5 flex items-center space-x-2 hover:bg-zinc-800 hover:text-zinc-100 text-left transition-colors"
+        >
+          <Plus size={12} class="text-zinc-400" />
+          <span>New Note</span>
+        </button>
+        <button
+          onclick={() => { const p = contextMenu!.node.path; closeContextMenu(); startCreate('folder', p); }}
+          class="w-full px-2.5 py-1.5 flex items-center space-x-2 hover:bg-zinc-800 hover:text-zinc-100 text-left transition-colors"
+        >
+          <FolderPlus size={12} class="text-zinc-400" />
+          <span>New Folder</span>
+        </button>
+        <div class="h-px bg-zinc-800 my-1"></div>
+        <button
+          onclick={() => { const p = contextMenu!.node.path; closeContextMenu(); handleCopyPath(p); }}
+          class="w-full px-2.5 py-1.5 flex items-center space-x-2 hover:bg-zinc-800 hover:text-zinc-100 text-left transition-colors"
+        >
+          <Copy size={12} class="text-zinc-400" />
+          <span>Copy as Path</span>
+        </button>
+        <button
+          onclick={() => { const p = contextMenu!.node.path; closeContextMenu(); handleCopyRelativePath(p); }}
+          class="w-full px-2.5 py-1.5 flex items-center space-x-2 hover:bg-zinc-800 hover:text-zinc-100 text-left transition-colors"
+        >
+          <Copy size={12} class="text-zinc-400" />
+          <span>Copy Relative Path</span>
+        </button>
+        <div class="h-px bg-zinc-800 my-1"></div>
+        <button
+          onclick={() => { const n = contextMenu!.node; closeContextMenu(); onDeleteNode?.(n); }}
+          class="w-full px-2.5 py-1.5 flex items-center space-x-2 hover:bg-red-500/20 text-red-400 text-left transition-colors"
+        >
+          <Trash2 size={12} />
+          <span>Delete Folder</span>
+        </button>
+      {:else}
+        <button
+          onclick={() => { const n = contextMenu!.node; closeContextMenu(); onSelectFile(n); }}
+          class="w-full px-2.5 py-1.5 flex items-center space-x-2 hover:bg-zinc-800 hover:text-zinc-100 text-left transition-colors"
+        >
+          <FileText size={12} class="text-zinc-400" />
+          <span>Open Note</span>
+        </button>
+        <div class="h-px bg-zinc-800 my-1"></div>
+        <button
+          onclick={() => { const p = contextMenu!.node.path; closeContextMenu(); handleCopyPath(p); }}
+          class="w-full px-2.5 py-1.5 flex items-center space-x-2 hover:bg-zinc-800 hover:text-zinc-100 text-left transition-colors"
+        >
+          <Copy size={12} class="text-zinc-400" />
+          <span>Copy as Path</span>
+        </button>
+        <button
+          onclick={() => { const p = contextMenu!.node.path; closeContextMenu(); handleCopyRelativePath(p); }}
+          class="w-full px-2.5 py-1.5 flex items-center space-x-2 hover:bg-zinc-800 hover:text-zinc-100 text-left transition-colors"
+        >
+          <Copy size={12} class="text-zinc-400" />
+          <span>Copy Relative Path</span>
+        </button>
+        <div class="h-px bg-zinc-800 my-1"></div>
+        <button
+          onclick={() => { const n = contextMenu!.node; closeContextMenu(); onDeleteNode?.(n); }}
+          class="w-full px-2.5 py-1.5 flex items-center space-x-2 hover:bg-red-500/20 text-red-400 text-left transition-colors"
+        >
+          <Trash2 size={12} />
+          <span>Delete Note</span>
+        </button>
+      {/if}
+    </div>
+  {/if}
 </aside>

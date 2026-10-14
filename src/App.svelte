@@ -7,12 +7,15 @@
   import StatusBar from './lib/components/StatusBar.svelte';
   import RightSidebar from './lib/components/RightSidebar.svelte';
   import QuickSearchModal from './lib/components/QuickSearchModal.svelte';
+  import SettingsModal from './lib/components/SettingsModal.svelte';
+  import GraphView from './lib/components/GraphView.svelte';
   import PromptModal from './lib/components/ui/dialog/PromptModal.svelte';
   import Button from './lib/components/ui/button/Button.svelte';
   import { vaultService } from './lib/services/vault';
   import { indexerService } from './lib/services/indexer';
+  import { driveSyncService } from './lib/services/driveSync.svelte';
   import type { FileNode, TabItem, EditorStats } from './lib/types';
-  import { FileText, Plus, FolderOpen } from 'lucide-svelte';
+  import { FileText, Plus, FolderOpen, Check } from 'lucide-svelte';
 
   let files = $state<FileNode[]>([]);
   let tabs = $state<TabItem[]>([]);
@@ -20,7 +23,28 @@
   let sidebarOpen = $state<boolean>(true);
   let rightSidebarOpen = $state<boolean>(true);
   let searchOpen = $state<boolean>(false);
-  let isSyncing = $state<boolean>(false);
+  let settingsOpen = $state<boolean>(false);
+  let isGraphOpen = $state<boolean>(false);
+  let vaultName = $state<string>(vaultService.vaultName);
+  let isVaultOpen = $state<boolean>(vaultService.isVaultOpen);
+  let vaultPath = $state<string>(vaultService.vaultPath);
+  let toastMessage = $state<string | null>(null);
+  let toastTimer: any = null;
+  let editorRef = $state<any>(null);
+
+  function handleScrollToHeading(headingText: string, line?: number, index?: number) {
+    if (editorRef) {
+      editorRef.scrollToHeading(headingText, line, index);
+    }
+  }
+
+  function showToast(message: string) {
+    toastMessage = message;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toastMessage = null;
+    }, 2200);
+  }
 
   // Modal dialog state (replacing native prompt and alert completely)
   let modalState = $state<{
@@ -32,7 +56,9 @@
     confirmText: string;
     cancelText?: string;
     isAlertOnly: boolean;
+    danger?: boolean;
     onConfirm: (val: string) => void;
+    onCancel?: () => void;
   }>({
     open: false,
     title: '',
@@ -41,7 +67,9 @@
     confirmText: 'Confirm',
     cancelText: 'Cancel',
     isAlertOnly: false,
-    onConfirm: () => {}
+    danger: false,
+    onConfirm: () => {},
+    onCancel: undefined
   });
 
   let editorStats = $state<EditorStats>({
@@ -90,27 +118,117 @@
     };
   }
 
+  function getSessionStorageKey(): string {
+    if (!vaultPath) return 'knowledge_workspace_session_default';
+    return `knowledge_workspace_session_${vaultPath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+  }
+
+  function saveWorkspaceSession() {
+    if (typeof window === 'undefined' || !window.localStorage || !vaultPath) return;
+    try {
+      const session = {
+        vaultPath,
+        openTabPaths: tabs.map(t => t.path),
+        activeTabPath: activeTabId
+      };
+      localStorage.setItem(getSessionStorageKey(), JSON.stringify(session));
+    } catch (e) {
+      console.warn('Failed to save workspace session:', e);
+    }
+  }
+
+  async function restoreWorkspaceSession(): Promise<boolean> {
+    if (typeof window === 'undefined' || !window.localStorage || !vaultPath) return false;
+    try {
+      const raw = localStorage.getItem(getSessionStorageKey());
+      if (!raw) return false;
+      const session = JSON.parse(raw);
+      if (!session || !Array.isArray(session.openTabPaths) || session.openTabPaths.length === 0) {
+        return false;
+      }
+
+      const restoredTabs: TabItem[] = [];
+      for (const filePath of session.openTabPaths) {
+        try {
+          const content = await vaultService.readFile(filePath);
+          const name = filePath.split('/').pop() || filePath;
+          restoredTabs.push({
+            id: filePath,
+            path: filePath,
+            name,
+            content,
+            isDirty: false
+          });
+        } catch {
+          // File might have been deleted outside, skip
+        }
+      }
+
+      if (restoredTabs.length > 0) {
+        tabs = restoredTabs;
+        const targetActive = session.activeTabPath && restoredTabs.some(t => t.id === session.activeTabPath)
+          ? session.activeTabPath
+          : restoredTabs[restoredTabs.length - 1].id;
+        activeTabId = targetActive;
+        return true;
+      }
+    } catch (e) {
+      console.warn('Failed to restore workspace session:', e);
+    }
+    return false;
+  }
+
   async function handleSelectFolder() {
     const success = await vaultService.selectVaultFolder();
     if (success) {
+      vaultName = vaultService.vaultName;
+      isVaultOpen = vaultService.isVaultOpen;
+      vaultPath = vaultService.vaultPath;
+      tabs = [];
+      activeTabId = '';
       files = await vaultService.getFiles();
       await indexerService.reindexVault();
-      if (files.length > 0 && tabs.length === 0) {
-        const firstFile = findFirstFile(files);
-        if (firstFile) openFile(firstFile);
+      if (files.length > 0) {
+        const restored = await restoreWorkspaceSession();
+        if (!restored) {
+          const firstFile = findFirstFile(files);
+          if (firstFile) openFile(firstFile);
+        }
       }
     }
   }
 
   async function loadVault() {
+    await vaultService.initVault();
+    vaultName = vaultService.vaultName;
+    isVaultOpen = vaultService.isVaultOpen;
+    vaultPath = vaultService.vaultPath;
     files = await vaultService.getFiles();
     if (files.length > 0) {
       await indexerService.reindexVault();
       if (tabs.length === 0) {
-        const firstFile = findFirstFile(files);
-        if (firstFile) openFile(firstFile);
+        const restored = await restoreWorkspaceSession();
+        if (!restored) {
+          const firstFile = findFirstFile(files);
+          if (firstFile) openFile(firstFile);
+        }
       }
     }
+
+    // Check Google Drive sync
+    driveSyncService.checkAuthStatus().then(async (authed) => {
+      if (authed && vaultService.vaultPath) {
+        try {
+          await driveSyncService.syncNow(vaultService.vaultPath);
+          files = await vaultService.getFiles();
+          vaultName = vaultService.vaultName;
+          isVaultOpen = vaultService.isVaultOpen;
+          await indexerService.reindexVault();
+        } catch (e) {
+          console.warn('Initial sync error:', e);
+        }
+      }
+    });
   }
 
   function findFirstFile(nodes: FileNode[]): FileNode | null {
@@ -139,6 +257,7 @@
     const existing = tabs.find(t => t.path === file.path);
     if (existing) {
       activeTabId = existing.id;
+      saveWorkspaceSession();
       return;
     }
 
@@ -153,6 +272,7 @@
 
     tabs = [...tabs, newTab];
     activeTabId = newTab.id;
+    saveWorkspaceSession();
   }
 
   async function openFileByPath(path: string) {
@@ -174,6 +294,7 @@
 
   function handleSelectTab(id: string) {
     activeTabId = id;
+    saveWorkspaceSession();
   }
 
   function handleCloseTab(id: string) {
@@ -192,6 +313,9 @@
         isAlertOnly: true,
         onConfirm: async () => {
           await vaultService.writeFile(tabToClose.path, tabToClose.content);
+          closeTabDirectly(id);
+        },
+        onCancel: () => {
           closeTabDirectly(id);
         }
       };
@@ -214,12 +338,31 @@
         activeTabId = '';
       }
     }
+    saveWorkspaceSession();
   }
 
-  function handleEditorChange(newContent: string) {
-    if (!activeTab) return;
-    activeTab.content = newContent;
-    activeTab.isDirty = true;
+  function handleCloseOtherTabs(keepId: string) {
+    const keepTab = tabs.find(t => t.id === keepId);
+    if (!keepTab) return;
+    tabs = [keepTab];
+    activeTabId = keepTab.id;
+    saveWorkspaceSession();
+  }
+
+  function handleEditorChange(filePath: string, newContent: string) {
+    const targetTab = tabs.find(t => t.path === filePath);
+    if (!targetTab) return;
+
+    if (targetTab.content === newContent) return;
+
+    // Do not mark as dirty if the difference is only whitespace or trailing newline normalization
+    if (!targetTab.isDirty && targetTab.content.trim() === newContent.trim()) {
+      targetTab.content = newContent;
+      return;
+    }
+
+    targetTab.content = newContent;
+    targetTab.isDirty = true;
   }
 
   async function handleSaveCurrent() {
@@ -229,6 +372,9 @@
 
     // Update in-memory index
     indexerService.indexFileContent(activeTab.path, activeTab.name, activeTab.content);
+
+    // Sync to Google Drive in background if connected
+    driveSyncService.syncFileOnSave(vaultService.vaultPath, activeTab.path);
   }
 
   async function handleCreateFile(name: string, parentPath?: string) {
@@ -241,6 +387,56 @@
   async function handleCreateFolder(name: string, parentPath?: string) {
     await vaultService.createFolder(name, parentPath);
     files = await vaultService.getFiles();
+  }
+
+  function closeTabsUnderPath(targetPath: string, isDirectory: boolean) {
+    const normTarget = targetPath.replace(/\\/g, '/').replace(/\/+$/, '');
+    const remainingTabs = tabs.filter(t => {
+      const normTab = t.path.replace(/\\/g, '/');
+      if (isDirectory) {
+        return !(normTab === normTarget || normTab.startsWith(normTarget + '/'));
+      }
+      return normTab !== normTarget;
+    });
+
+    if (remainingTabs.length !== tabs.length) {
+      tabs = remainingTabs;
+      if (!tabs.some(t => t.id === activeTabId)) {
+        activeTabId = tabs.length > 0 ? tabs[tabs.length - 1].id : '';
+      }
+      saveWorkspaceSession();
+    }
+  }
+
+  function promptDeleteNode(node: FileNode) {
+    const isDir = node.isDirectory;
+    modalState = {
+      open: true,
+      title: isDir ? 'Delete Folder' : 'Delete Note',
+      description: isDir
+        ? `Are you sure you want to permanently delete folder "${node.name}" and all of its contents from disk? This action cannot be undone.`
+        : `Are you sure you want to permanently delete note "${node.name}" from disk? This action cannot be undone.`,
+      placeholder: '',
+      confirmText: isDir ? 'Delete Folder' : 'Delete Note',
+      cancelText: 'Cancel',
+      isAlertOnly: true,
+      danger: true,
+      onConfirm: async () => {
+        await handleDeleteNode(node);
+      }
+    };
+  }
+
+  async function handleDeleteNode(node: FileNode) {
+    await vaultService.deleteNode(node.path);
+    closeTabsUnderPath(node.path, node.isDirectory);
+    files = await vaultService.getFiles();
+    vaultName = vaultService.vaultName;
+    isVaultOpen = vaultService.isVaultOpen;
+    await indexerService.reindexVault();
+
+    // Trash on Google Drive in background if connected
+    driveSyncService.syncDeleteFile(vaultService.vaultPath, node.path);
   }
 
   function handleKeyDown(e: KeyboardEvent) {
@@ -268,13 +464,85 @@
       sidebarOpen = !sidebarOpen;
       return;
     }
+    // Ctrl+G: Toggle Graph View
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g') {
+      e.preventDefault();
+      isGraphOpen = !isGraphOpen;
+      return;
+    }
+    // Escape: Close Graph View if open
+    if (e.key === 'Escape' && isGraphOpen) {
+      e.preventDefault();
+      isGraphOpen = false;
+      return;
+    }
+  }
+
+  let lastSyncTimestamp = 0;
+
+  async function handleQuickSync() {
+    if (!vaultPath) return;
+    if (driveSyncService.isSyncing) return;
+    try {
+      showToast('Syncing with Google Drive...');
+      const summary = await driveSyncService.syncNow(vaultPath);
+      if (summary) {
+        files = await vaultService.getFiles();
+        await indexerService.reindexVault();
+        if (summary.uploaded > 0 || summary.downloaded > 0 || summary.deleted > 0) {
+          showToast(`Synced: ↑${summary.uploaded} ↓${summary.downloaded} 🗑${summary.deleted}`);
+        } else {
+          showToast('All notes up to date');
+        }
+      }
+    } catch (err: any) {
+      showToast(`Sync error: ${err?.toString() || 'Failed'}`);
+    }
+  }
+
+  async function triggerAutoSync() {
+    if (!driveSyncService.isAuthenticated || !vaultPath || driveSyncService.isSyncing) return;
+    const now = Date.now();
+    // Throttle to at most once per 45 seconds to avoid unnecessary network calls
+    if (now - lastSyncTimestamp < 45_000) return;
+    lastSyncTimestamp = now;
+
+    try {
+      const summary = await driveSyncService.syncNow(vaultPath);
+      if (summary && (summary.uploaded > 0 || summary.downloaded > 0 || summary.deleted > 0)) {
+        files = await vaultService.getFiles();
+        await indexerService.reindexVault();
+        showToast(`Auto-synced: ↑${summary.uploaded} ↓${summary.downloaded}`);
+      }
+    } catch (e) {
+      console.warn('Background auto-sync failed:', e);
+    }
   }
 
   onMount(() => {
     loadVault();
     window.addEventListener('keydown', handleKeyDown);
+
+    const onWindowFocus = () => {
+      triggerAutoSync();
+    };
+    window.addEventListener('focus', onWindowFocus);
+
+    const onBeforeUnload = () => {
+      saveWorkspaceSession();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+
+    // Periodic background sync every 5 minutes
+    const intervalTimer = setInterval(() => {
+      triggerAutoSync();
+    }, 5 * 60 * 1000);
+
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('focus', onWindowFocus);
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      clearInterval(intervalTimer);
     };
   });
 </script>
@@ -282,16 +550,21 @@
 <div class="h-screen w-screen flex flex-col bg-zed-bg-base text-zed-text-primary overflow-hidden select-none font-sans">
   <!-- Top Navigation & Breadcrumbs -->
   <TitleBar
-    vaultName={vaultService.vaultName}
+    {vaultName}
     currentPath={activeTab?.path ?? ''}
     {sidebarOpen}
     {rightSidebarOpen}
+    {isGraphOpen}
     onToggleSidebar={() => (sidebarOpen = !sidebarOpen)}
     onToggleRightSidebar={() => (rightSidebarOpen = !rightSidebarOpen)}
     onOpenSearch={() => (searchOpen = true)}
     onNewNote={() => openCreateNoteDialog()}
     onSelectFolder={handleSelectFolder}
-    {isSyncing}
+    onOpenSettings={() => (settingsOpen = true)}
+    onQuickSync={handleQuickSync}
+    onToggleGraph={() => (isGraphOpen = !isGraphOpen)}
+    isSyncing={driveSyncService.isSyncing}
+    isConnected={driveSyncService.isAuthenticated}
   />
 
   <!-- Main Body: Sidebar + Editor + Right Sidebar -->
@@ -304,29 +577,45 @@
         onSelectFile={openFile}
         onCreateFile={handleCreateFile}
         onCreateFolder={handleCreateFolder}
+        onDeleteNode={promptDeleteNode}
+        onNotify={showToast}
       />
     {/if}
 
     <!-- Center Workspace -->
-    <main class="flex-1 flex flex-col overflow-hidden bg-zed-bg-base">
-      {#if tabs.length > 0}
+    <main class="flex-1 flex flex-col overflow-hidden bg-zed-bg-base relative">
+      {#if isGraphOpen}
+        <GraphView
+          activePath={activeTab?.path}
+          onOpenFile={(path) => {
+            openFileByPath(path);
+            isGraphOpen = false;
+          }}
+          onClose={() => (isGraphOpen = false)}
+        />
+      {:else if tabs.length > 0}
         <TabBar
           {tabs}
           {activeTabId}
           onSelectTab={handleSelectTab}
           onCloseTab={handleCloseTab}
+          onCloseOtherTabs={handleCloseOtherTabs}
+          onNotify={showToast}
         />
 
         {#if activeTab}
           <div class="flex-1 overflow-hidden relative">
-            <Editor
-              content={activeTab.content}
-              path={activeTab.path}
-              isDirty={activeTab.isDirty}
-              onChange={handleEditorChange}
-              onSave={handleSaveCurrent}
-              onStatsChange={(stats) => (editorStats = stats)}
-            />
+            {#key activeTab.path}
+              <Editor
+                bind:this={editorRef}
+                content={activeTab.content}
+                path={activeTab.path}
+                isDirty={activeTab.isDirty}
+                onChange={handleEditorChange}
+                onSave={handleSaveCurrent}
+                onStatsChange={(stats) => (editorStats = stats)}
+              />
+            {/key}
           </div>
         {/if}
       {:else}
@@ -336,15 +625,15 @@
             <FileText size={22} />
           </div>
           <h2 class="text-sm font-semibold text-zinc-200 mb-1">
-            {vaultService.isVaultOpen ? vaultService.vaultName : 'No Vault Open'}
+            {isVaultOpen ? vaultName : 'No Vault Open'}
           </h2>
           <p class="text-xs text-zinc-500 max-w-sm mb-6">
-            {vaultService.isVaultOpen 
+            {isVaultOpen 
               ? 'Select a note from the project panel or create a new file to start writing.'
               : 'Choose a folder on your computer to store and edit real markdown files.'}
           </p>
 
-          {#if !vaultService.isVaultOpen}
+          {#if !isVaultOpen}
             <Button
               variant="default"
               size="lg"
@@ -393,7 +682,9 @@
       <RightSidebar
         currentPath={activeTab?.path ?? ''}
         currentName={activeTab?.name ?? ''}
+        currentContent={activeTab?.content ?? ''}
         onOpenFile={openFileByPath}
+        onScrollToHeading={handleScrollToHeading}
       />
     {/if}
   </div>
@@ -401,9 +692,21 @@
   <!-- Bottom Status Bar -->
   <StatusBar
     stats={editorStats}
-    vaultName={vaultService.vaultName}
-    {isSyncing}
+    {vaultName}
+    isSyncing={driveSyncService.isSyncing}
     isDirty={activeTab?.isDirty ?? false}
+  />
+
+  <!-- Settings Modal (Google Drive OAuth & Sync) -->
+  <SettingsModal
+    open={settingsOpen}
+    vaultPath={vaultPath}
+    onClose={() => (settingsOpen = false)}
+    onNotify={showToast}
+    onSyncComplete={async () => {
+      files = await vaultService.getFiles();
+      await indexerService.reindexVault();
+    }}
   />
 
   <!-- shadcn Modal / Dialog (Zero native browser prompts/alerts) -->
@@ -416,7 +719,9 @@
     confirmText={modalState.confirmText}
     cancelText={modalState.cancelText}
     isAlertOnly={modalState.isAlertOnly}
+    danger={modalState.danger}
     onConfirm={modalState.onConfirm}
+    onCancel={modalState.onCancel}
     onClose={() => (modalState.open = false)}
   />
 
@@ -426,4 +731,12 @@
     onClose={() => (searchOpen = false)}
     onSelectFile={openFileByPath}
   />
+
+  <!-- Toast Notification (Copied to clipboard, etc.) -->
+  {#if toastMessage}
+    <div class="fixed bottom-9 right-4 z-50 flex items-center space-x-2 px-3 py-1.5 bg-zinc-900/95 border border-zinc-700 text-zinc-200 text-xs rounded-lg shadow-2xl pointer-events-none transition-all">
+      <Check size={13} class="text-emerald-400" />
+      <span class="truncate max-w-sm font-medium">{toastMessage}</span>
+    </div>
+  {/if}
 </div>
