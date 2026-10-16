@@ -276,7 +276,22 @@ class VaultService {
 
   // --- COMMON OPERATIONS (PHYSICAL DISK ACCESS) ---
 
-  async getFiles(): Promise<FileNode[]> {
+  /**
+   * Rescans vault files directly from disk and updates in-memory vaultTree
+   */
+  async rescanVault(): Promise<FileNode[]> {
+    if (isTauri && this.vaultPath) {
+      await this.scanTauriFolder(this.vaultPath);
+    } else if (this.dirHandle) {
+      await this.scanBrowserDirectory(this.dirHandle);
+    }
+    return this.vaultTree;
+  }
+
+  async getFiles(forceRescan: boolean = false): Promise<FileNode[]> {
+    if (forceRescan) {
+      return await this.rescanVault();
+    }
     return this.vaultTree;
   }
 
@@ -317,12 +332,18 @@ class VaultService {
 
     if (isTauri) {
       try {
-        const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+        const { writeTextFile, mkdir } = await import('@tauri-apps/plugin-fs');
+        const lastSlash = fullPath.lastIndexOf('/');
+        if (lastSlash > 0) {
+          const parentDir = fullPath.substring(0, lastSlash);
+          await mkdir(parentDir, { recursive: true });
+        }
         await writeTextFile(fullPath, initialContent);
         await this.scanTauriFolder(this.vaultPath);
+        const baseName = filename.split('/').pop() || filename;
         return {
           path: fullPath,
-          name: filename,
+          name: baseName,
           isDirectory: false,
           content: initialContent
         };

@@ -27,6 +27,7 @@
   let editorElement = $state<HTMLDivElement | null>(null);
   let view: EditorView | null = null;
   let currentPath = $state('');
+  let isInternalUpdate = false;
 
   export function executeAction(action: string, param?: any) {
     if (!view) return;
@@ -195,7 +196,11 @@
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             const newDoc = update.state.doc.toString();
+            isInternalUpdate = true;
             onChange(newDoc);
+            queueMicrotask(() => {
+              isInternalUpdate = false;
+            });
           }
           if (update.docChanged || update.selectionSet) {
             calculateStats(update.state);
@@ -216,6 +221,14 @@
   $effect(() => {
     if (path !== currentPath && editorElement) {
       initEditor();
+    } else if (view && !isInternalUpdate) {
+      const currentDoc = view.state.doc.toString();
+      if (content !== currentDoc) {
+        view.dispatch({
+          changes: { from: 0, to: currentDoc.length, insert: content }
+        });
+        calculateStats(view.state);
+      }
     }
   });
 

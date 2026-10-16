@@ -35,6 +35,8 @@ struct FolderListResponse {
 #[derive(Deserialize)]
 struct CreateFileResponse {
     id: String,
+    #[serde(default, rename = "md5Checksum")]
+    md5_checksum: Option<String>,
 }
 
 pub async fn ensure_drive_folder(
@@ -148,13 +150,13 @@ pub async fn upload_drive_file(
     content: &[u8],
     parent_id: &str,
     existing_id: Option<&str>,
-) -> Result<String, String> {
+) -> Result<(String, Option<String>), String> {
     let client = reqwest::Client::new();
 
     if let Some(file_id) = existing_id {
         // Update existing file content
         let url = format!(
-            "https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media",
+            "https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media&fields=id,md5Checksum",
             file_id
         );
         let res = client
@@ -176,7 +178,7 @@ pub async fn upload_drive_file(
             .await
             .map_err(|e| format!("Failed to parse update file response: {}", e))?;
 
-        Ok(updated.id)
+        Ok((updated.id, updated.md5_checksum))
     } else {
         // Multipart upload for new file with metadata (parents + name)
         let metadata = serde_json::json!({
@@ -199,7 +201,7 @@ pub async fn upload_drive_file(
             );
 
         let res = client
-            .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
+            .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,md5Checksum")
             .header("Authorization", format!("Bearer {}", token))
             .multipart(form)
             .send()
@@ -216,7 +218,7 @@ pub async fn upload_drive_file(
             .await
             .map_err(|e| format!("Failed to parse create file response: {}", e))?;
 
-        Ok(created.id)
+        Ok((created.id, created.md5_checksum))
     }
 }
 

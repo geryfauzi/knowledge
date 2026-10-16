@@ -198,6 +198,40 @@
     }
   }
 
+  async function refreshVaultState() {
+    files = await vaultService.rescanVault();
+    vaultName = vaultService.vaultName;
+    isVaultOpen = vaultService.isVaultOpen;
+    vaultPath = vaultService.vaultPath;
+    await indexerService.reindexVault();
+
+    // 1. Reload open tabs if updated on disk and not dirty
+    for (const tab of tabs) {
+      if (!tab.isDirty) {
+        try {
+          const freshContent = await vaultService.readFile(tab.path);
+          if (freshContent !== tab.content) {
+            tab.content = freshContent;
+          }
+        } catch {
+          // File might have been removed on remote
+        }
+      }
+    }
+
+    // 2. Close tabs for files that were deleted on disk
+    const previousTabsCount = tabs.length;
+    tabs = tabs.filter(tab => !!findNodeByPath(files, tab.path));
+    if (tabs.length !== previousTabsCount) {
+      if (tabs.length > 0 && !tabs.some(t => t.id === activeTabId)) {
+        activeTabId = tabs[0].id;
+      } else if (tabs.length === 0) {
+        activeTabId = '';
+      }
+      saveWorkspaceSession();
+    }
+  }
+
   async function loadVault() {
     await vaultService.initVault();
     vaultName = vaultService.vaultName;
@@ -220,10 +254,7 @@
       if (authed && vaultService.vaultPath) {
         try {
           await driveSyncService.syncNow(vaultService.vaultPath);
-          files = await vaultService.getFiles();
-          vaultName = vaultService.vaultName;
-          isVaultOpen = vaultService.isVaultOpen;
-          await indexerService.reindexVault();
+          await refreshVaultState();
         } catch (e) {
           console.warn('Initial sync error:', e);
         }
@@ -379,14 +410,13 @@
 
   async function handleCreateFile(name: string, parentPath?: string) {
     const newFile = await vaultService.createFile(name, parentPath);
-    files = await vaultService.getFiles();
-    await indexerService.reindexVault();
+    await refreshVaultState();
     openFile(newFile);
   }
 
   async function handleCreateFolder(name: string, parentPath?: string) {
     await vaultService.createFolder(name, parentPath);
-    files = await vaultService.getFiles();
+    await refreshVaultState();
   }
 
   function closeTabsUnderPath(targetPath: string, isDirectory: boolean) {
@@ -430,10 +460,7 @@
   async function handleDeleteNode(node: FileNode) {
     await vaultService.deleteNode(node.path);
     closeTabsUnderPath(node.path, node.isDirectory);
-    files = await vaultService.getFiles();
-    vaultName = vaultService.vaultName;
-    isVaultOpen = vaultService.isVaultOpen;
-    await indexerService.reindexVault();
+    await refreshVaultState();
 
     // Trash on Google Drive in background if connected
     driveSyncService.syncDeleteFile(vaultService.vaultPath, node.path);
@@ -487,8 +514,7 @@
       showToast('Syncing with Google Drive...');
       const summary = await driveSyncService.syncNow(vaultPath);
       if (summary) {
-        files = await vaultService.getFiles();
-        await indexerService.reindexVault();
+        await refreshVaultState();
         if (summary.uploaded > 0 || summary.downloaded > 0 || summary.deleted > 0) {
           showToast(`Synced: ↑${summary.uploaded} ↓${summary.downloaded} 🗑${summary.deleted}`);
         } else {
@@ -510,8 +536,7 @@
     try {
       const summary = await driveSyncService.syncNow(vaultPath);
       if (summary && (summary.uploaded > 0 || summary.downloaded > 0 || summary.deleted > 0)) {
-        files = await vaultService.getFiles();
-        await indexerService.reindexVault();
+        await refreshVaultState();
         showToast(`Auto-synced: ↑${summary.uploaded} ↓${summary.downloaded}`);
       }
     } catch (e) {
@@ -704,8 +729,7 @@
     onClose={() => (settingsOpen = false)}
     onNotify={showToast}
     onSyncComplete={async () => {
-      files = await vaultService.getFiles();
-      await indexerService.reindexVault();
+      await refreshVaultState();
     }}
   />
 

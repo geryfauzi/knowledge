@@ -60,9 +60,27 @@ fn save_ledger(vault_path: &str, ledger: &SyncLedger) -> Result<(), String> {
     Ok(())
 }
 
+pub fn normalize_newlines(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == b'\r' {
+            if i + 1 < data.len() && data[i + 1] == b'\n' {
+                out.push(b'\n');
+                i += 2;
+                continue;
+            }
+        }
+        out.push(data[i]);
+        i += 1;
+    }
+    out
+}
+
 fn calculate_sha256(data: &[u8]) -> String {
+    let normalized = normalize_newlines(data);
     let mut hasher = Sha256::new();
-    hasher.update(data);
+    hasher.update(&normalized);
     format!("{:x}", hasher.finalize())
 }
 
@@ -296,14 +314,14 @@ pub async fn google_sync_now(
 
                 let target_drive_id = remote_item.map(|r| r.id.as_str()).unwrap_or(&entry.drive_id);
                 match upload_drive_file(&token, &filename, &content, &drive_parent_id, Some(target_drive_id)).await {
-                    Ok(drive_id) => {
+                    Ok((drive_id, remote_md5)) => {
                         ledger.files.insert(
                             rel_path.clone(),
                             LedgerFileEntry {
                                 drive_id,
                                 sha256: local_hash,
                                 last_synced: now,
-                                remote_md5: None,
+                                remote_md5,
                             },
                         );
                         summary.uploaded += 1;
@@ -312,58 +330,62 @@ pub async fn google_sync_now(
                 }
                 continue;
             } else {
-                // Conflict: Both modified! Last-Modified-Wins with Conflict Backup
-                summary.conflicts += 1;
+                // Both modified! Pure Last-Modified-Wins: Accept newest without creating conflict backup files
                 if let Some(remote) = remote_item {
-                    let timestamp = chrono_lite_timestamp();
-                    if local_mtime >= remote_mtime {
-                        // Local is newer: backup remote, upload local
-                        let conflict_rel = rel_path.replace(".md", &format!(" (Drive Conflict {}).md", timestamp));
-                        let conflict_abs = vault_base.join(&conflict_rel);
-                        if let Ok(remote_content) = download_drive_file(&token, &remote.id).await {
-                            let _ = std::fs::write(&conflict_abs, remote_content);
-                        }
-
-                        let drive_parent_id = match get_or_create_subfolder(
-                            &token,
-                            &root_id,
-                            &parent_folder_rel,
-                            &mut folder_cache,
-                        )
-                        .await
-                        {
-                            Ok(id) => id,
-                            Err(e) => {
-                                summary.errors.push(e);
-                                continue;
-                            }
-                        };
-
-                        match upload_drive_file(&token, &filename, &content, &drive_parent_id, Some(&remote.id)).await {
-                            Ok(drive_id) => {
+                    match download_drive_file(&token, &remote.id).await {
+                        Ok(remote_text) => {
+                            let remote_bytes = remote_text.as_bytes();
+                            // If contents are actually identical (e.g. CRLF vs LF), update ledger and continue
+                            if normalize_newlines(&content) == normalize_newlines(remote_bytes) {
+                                let hash = calculate_sha256(&content);
                                 ledger.files.insert(
                                     rel_path.clone(),
                                     LedgerFileEntry {
-                                        drive_id,
-                                        sha256: local_hash,
+                                        drive_id: remote.id.clone(),
+                                        sha256: hash,
                                         last_synced: now,
-                                        remote_md5: None,
+                                        remote_md5: remote.md5_checksum.clone(),
                                     },
                                 );
-                                summary.uploaded += 1;
+                                continue;
                             }
-                            Err(e) => summary.errors.push(e),
-                        }
-                    } else {
-                        // Remote is newer: backup local, download remote
-                        let conflict_rel = rel_path.replace(".md", &format!(" (Local Conflict {}).md", timestamp));
-                        let conflict_abs = vault_base.join(&conflict_rel);
-                        let _ = std::fs::write(&conflict_abs, &content);
 
-                        match download_drive_file(&token, &remote.id).await {
-                            Ok(text) => {
-                                if let Ok(()) = std::fs::write(abs_path, text.as_bytes()) {
-                                    let hash = calculate_sha256(text.as_bytes());
+                            if local_mtime >= remote_mtime {
+                                // Local is newer -> Overwrite Drive with local content
+                                let drive_parent_id = match get_or_create_subfolder(
+                                    &token,
+                                    &root_id,
+                                    &parent_folder_rel,
+                                    &mut folder_cache,
+                                )
+                                .await
+                                {
+                                    Ok(id) => id,
+                                    Err(e) => {
+                                        summary.errors.push(e);
+                                        continue;
+                                    }
+                                };
+
+                                match upload_drive_file(&token, &filename, &content, &drive_parent_id, Some(&remote.id)).await {
+                                    Ok((drive_id, remote_md5)) => {
+                                        ledger.files.insert(
+                                            rel_path.clone(),
+                                            LedgerFileEntry {
+                                                drive_id,
+                                                sha256: local_hash,
+                                                last_synced: now,
+                                                remote_md5,
+                                            },
+                                        );
+                                        summary.uploaded += 1;
+                                    }
+                                    Err(e) => summary.errors.push(e),
+                                }
+                            } else {
+                                // Remote is newer -> Overwrite local file with remote content
+                                if let Ok(()) = std::fs::write(abs_path, remote_bytes) {
+                                    let hash = calculate_sha256(remote_bytes);
                                     ledger.files.insert(
                                         rel_path.clone(),
                                         LedgerFileEntry {
@@ -376,8 +398,8 @@ pub async fn google_sync_now(
                                     summary.downloaded += 1;
                                 }
                             }
-                            Err(e) => summary.errors.push(e),
                         }
+                        Err(e) => summary.errors.push(e),
                     }
                 }
                 continue;
@@ -403,14 +425,14 @@ pub async fn google_sync_now(
                 // Exists on both sides, not yet in ledger: resolve by timestamp
                 if local_mtime >= remote_mtime {
                     match upload_drive_file(&token, &filename, &content, &drive_parent_id, Some(&remote.id)).await {
-                        Ok(drive_id) => {
+                        Ok((drive_id, remote_md5)) => {
                             ledger.files.insert(
                                 rel_path.clone(),
                                 LedgerFileEntry {
                                     drive_id,
                                     sha256: local_hash,
                                     last_synced: now,
-                                    remote_md5: None,
+                                    remote_md5,
                                 },
                             );
                             summary.uploaded += 1;
@@ -440,14 +462,14 @@ pub async fn google_sync_now(
             } else {
                 // Exists only locally: upload to Drive
                 match upload_drive_file(&token, &filename, &content, &drive_parent_id, None).await {
-                    Ok(drive_id) => {
+                    Ok((drive_id, remote_md5)) => {
                         ledger.files.insert(
                             rel_path.clone(),
                             LedgerFileEntry {
                                 drive_id,
                                 sha256: local_hash,
                                 last_synced: now,
-                                remote_md5: None,
+                                remote_md5,
                             },
                         );
                         summary.uploaded += 1;
@@ -568,7 +590,7 @@ pub async fn google_sync_file(
 
     let existing_drive_id = ledger.files.get(&rel_path).map(|e| e.drive_id.as_str());
 
-    let drive_id = upload_drive_file(&token, &filename, &content, &parent_id, existing_drive_id).await?;
+    let (drive_id, remote_md5) = upload_drive_file(&token, &filename, &content, &parent_id, existing_drive_id).await?;
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -581,7 +603,7 @@ pub async fn google_sync_file(
             drive_id,
             sha256: local_hash,
             last_synced: now,
-            remote_md5: None,
+            remote_md5,
         },
     );
 
@@ -662,14 +684,6 @@ async fn collect_remote_files(
     Ok(())
 }
 
-fn chrono_lite_timestamp() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!("{}", now)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,5 +696,35 @@ mod tests {
 
         let epoch_1970 = parse_iso8601_to_epoch("1970-01-01T00:00:00Z");
         assert_eq!(epoch_1970, Some(0));
+    }
+
+    #[test]
+    fn test_normalize_newlines() {
+        let crlf = b"Hello\r\nWorld\r\n";
+        let lf = b"Hello\nWorld\n";
+        assert_eq!(normalize_newlines(crlf), lf);
+    }
+
+    #[test]
+    fn test_calculate_sha256_crlf_lf_equivalence() {
+        let crlf = b"# My Note\r\n\r\nSome content\r\n";
+        let lf = b"# My Note\n\nSome content\n";
+        assert_eq!(calculate_sha256(crlf), calculate_sha256(lf));
+    }
+
+    #[test]
+    fn test_normalize_relative_path_slash_mismatch() {
+        let base = PathBuf::from("C:/Users/Gery/Vault");
+        let file = PathBuf::from(r"C:\Users\Gery\Vault\folder\note.md");
+        let rel = normalize_relative_path(&file, &base);
+        assert_eq!(rel, "folder/note.md");
+    }
+
+    #[test]
+    fn test_normalize_relative_path_case() {
+        let base = PathBuf::from("C:/Users/Gery/Vault");
+        let file = PathBuf::from("c:/Users/Gery/Vault/folder/note.md");
+        let rel = normalize_relative_path(&file, &base);
+        assert_eq!(rel, "folder/note.md");
     }
 }
